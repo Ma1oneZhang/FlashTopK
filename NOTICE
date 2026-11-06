@@ -1,0 +1,9 @@
+FlashTopK
+Copyright 2026 the FlashTopK authors
+
+This product includes software derived from the following project, licensed under the Apache License, Version 2.0:
+
+* LiteTopK (https://github.com/Heisenberg-Yin/LiteTopK). The gate calibration (flashtopk/kernels/seed_prep.py) and the
+  candidate selection (flashtopk/kernels/selection.py) follow LiteTopK's seed-prep and compact top-k kernels.
+
+The score upper bound of key pruning (flashtopk/plan.py) follows DoSA (arXiv 2610.13990, sections 2.2-2.5).

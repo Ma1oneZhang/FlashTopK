@@ -1,0 +1,69 @@
+# Every version the reproduction uses. setup.sh and get_inputs.py read them from here; requirements.txt is the [pip]
+# table, written by setup.sh.
+
+[python]
+version = "3.14"  # measured with 3.14.6; torch 2.13 takes 3.10 to 3.14
+
+# The benchmark environment (one GPU). FlashTopK itself is the checkout this directory sits in.
+[pip]
+torch = "2.13.0"
+triton = "3.7.1"
+nvidia-cutlass-dsl = "4.5.2"
+# The DSL compiler's CUDA 13 build (the [cu13] extra), matching the measured environment
+nvidia-cutlass-dsl-libs-cu13 = "4.5.2"
+apache-tvm-ffi = "0.1.11"
+cuda-bindings = "13.3.1"
+cuda-python = "13.3.1"
+sgl-deep-gemm = "0.2.2"          # DeepGEMM 0.2.2: fp8_fp4_mqa_logits, the FP8 dense scorer
+nvidia-cudnn-frontend = "1.25.0" # cuDNN's DSA indexer forward, the BF16 dense scorer
+huggingface-hub = "0.36.0"
+matplotlib = "3.10.7"
+ninja = "1.13.0"
+# FlashInfer's runtime dependencies, as measured
+click = "8.4.2"
+einops = "0.8.2"
+numpy = "2.3.4"
+nvidia-ml-py = "13.610.43"
+packaging = "26.2"
+requests = "2.34.2"
+tqdm = "4.70.0"
+
+# Installed without their declared dependencies, as measured: FlashInfer 0.7.1 declares cuDNN frontend >= 1.30 and
+# CuTe DSL >= 4.6.2, and ran beside 1.25.0 and 4.5.2 (its top-k uses neither).
+[pip-nodeps]
+flashinfer-python = "0.7.1"      # the top-k of the dense baseline
+
+# Sources built at these commits. DeepSelect and HPC-Ops are built for SM90 against CUTLASS 4.4.2
+# (in place of their own vendored copies, as the measurements were).
+[git.cutlass]
+url = "https://github.com/NVIDIA/cutlass"
+commit = "da5e086dab31d63815acafdac9a9c5893b1c69e2"  # v4.4.2
+
+[git.deepselect]
+url = "https://github.com/deepseek-ai/DeepSelect"
+commit = "bfa4507d935f17ebfc3d0f00ff7d3c9a4d0e5c18"
+
+[git.hpc-ops]
+url = "https://github.com/Tencent/hpc-ops"
+commit = "2a2e26562433a8ba4b504858f1c938eb7612c901"
+
+# The optional dump environment: SGLang serving GLM-5.1 (BF16, as the released measurements' dumps) over an
+# InfiniteBench document.
+[dump]
+sglang = "0.5.18"
+huggingface-hub = "1.33.0"  # SGLang's transformers 5.12.1 takes >=1.5,<2
+model = "zai-org/GLM-5.1"
+model_revision = "26e1bd6e011feb778d25ae34b09b07074139d92d"
+layers = [24, 48]
+
+[text]
+dataset = "xinrongzhang2022/InfiniteBench"
+revision = "90f0394333616266d9fe85824ceaf505093cbaa5"
+file = "longbook_qa_chn.jsonl"
+id = 123  # 6.56M characters, past 1M tokens; not redistributed here
+sha256 = "a45f230f463fb8dc751b05d0d42918a60efc39be7962d365f850d1132d3233c4"  # its context, UTF-8
+
+# The benchmark inputs as published (the BF16 1M prefills; the shorter lengths and the FP8 files are derived locally).
+[inputs]
+dataset = "YangshenDeng/flashtopk-reproduce-inputs"
+revision = "3f11fcb39c5ba543b93b058a8da81dadb139bf90"

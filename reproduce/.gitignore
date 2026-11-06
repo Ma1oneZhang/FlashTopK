@@ -1,0 +1,7 @@
+.venv/
+.venv-dump/
+.cache/
+third_party/
+inputs/
+results/
+text/
