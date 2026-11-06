@@ -6,7 +6,9 @@ FlashTopK runs on NVIDIA Hopper (SM90) GPUs, with FP8 or BF16 operands. The kern
 |---|---|:---:|:---:|
 | H800 | SM90 (9.0) | ✅ | ✅ |
 | H20 | SM90 (9.0) | ✅ | ✅ |
-| H100, H200 | SM90 (9.0) | ↩️ H800 | ↩️ H800 |
+| H100 | SM90 (9.0) | ✅ | ✅ |
+| H200 | SM90 (9.0) | ✅ | ✅ |
+| other SM90 | SM90 (9.0) | ↩️ H800 | ↩️ H800 |
 
 * ✅ **Tuned:** tested, with its own `PRUNE_COSTS` entry.
 * ↩️ **Falls back:** uses the `PRUNE_COSTS` of the GPU after the arrow.
