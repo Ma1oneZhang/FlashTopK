@@ -50,7 +50,7 @@ class SampleWindows:
             mHi[r] = samples_below(mKe[r], seq_len_kv, samples)
 
 
-EST_GROUP = 8  # the refine's row group (refine_sm90 BLOCK_Q)
+EST_GROUP = 8  # the refine's row group (refine_sm90 / refine_sm100 BLOCK_Q)
 EST_WORDS = 16  # an estimate row's in-window mask over the 256 sample keys (8 words), then its past-the-gate mask
 
 

@@ -3,10 +3,10 @@
 and KV split scores in full the keys prune_sm90.py's mask keeps for the tile, and leaves select the candidates the scan
 would.
 
-The gather warpgroup counts the survivors of each 128-key block of the CTA's range into a prefix sum in shared
-memory, then gather warp w fills compact tile w (64 keys, the WGMMA's M) with survivors 64t .. 64t + 63 of every
-tile t = w (mod 4): each lane locates its two keys' blocks by binary search and their bits with fns, and copies the K
-rows (cp.async, 16 bytes at a time, 128-byte swizzle) with each key's index and kv scale.
+refine_sm100.py's design on SM90: the gather warpgroup counts the survivors of each 128-key block of the CTA's range
+into a prefix sum in shared memory, then gather warp w fills compact tile w (64 keys, the WGMMA's M) with survivors
+64t .. 64t + 63 of every tile t = w (mod 4): each lane locates its two keys' blocks by binary search and their bits
+with fns, and copies the K rows (cp.async, 16 bytes at a time, 128-byte swizzle) with each key's index and kv scale.
 Math warpgroup g takes the tiles t = g (mod 2), in turn with the other group (named barriers 2 and 3), one M=64 x N=256
 WGMMA per tile, and scores and appends exactly as scan_sm90.py (score_owned, owned_hits, append_owned), so pruning
 selects the scan's bits; like the scan it issues tile t + 2's WGMMA before writing tile t's hits, which here are

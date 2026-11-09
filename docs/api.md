@@ -90,7 +90,7 @@ torch.ops.flashtopk.select(q, kv, weights, ks, ke, kv_scales, topk, pruning=None
 return_scores."""
 
 flashtopk.supported(q, kv=None) -> bool
-"""Whether the kernels take these operands on this GPU (shapes, dtypes, SM90)."""
+"""Whether the kernels take these operands on this GPU (shapes, dtypes, SM90 or SM100)."""
 ```
 
 ## Configuration

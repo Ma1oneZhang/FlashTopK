@@ -6,7 +6,8 @@ with the torch tensors themselves.
   * scan_dense: every score of a row's window written at its key (the shared sample, recovery);
   * prune_scan: the score upper bound's mask, then the refine of the keys it keeps (the scan's candidates);
 
-on SM90 (the _sm90 files). Lengths are symbolic, so a variant compiles once per process.
+on SM100 (scan_sm100.py, prune_sm100.py, refine_sm100.py) or SM90 (the _sm90 files). Lengths are symbolic, so a
+variant compiles once per process.
 """
 
 from __future__ import annotations
@@ -23,9 +24,13 @@ import torch
 from cutlass import Float32, Int32
 
 from .common import BLOCK_KV, HEAD_DIM, NEXT_N, NUM_HEADS, PRUNE_BLOCK_Q, PRUNE_COLS, REFINE_BLOCK_Q
+from .prune_sm100 import PruneSm100
 from .prune_sm90 import PruneSm90
+from .refine_sm100 import RefineSm100
+from .refine_sm100 import max_blocks as refine_max_blocks
 from .refine_sm90 import MAX_BLOCKS as REFINE_SM90_MAX_BLOCKS
 from .refine_sm90 import RefineSm90
+from .scan_sm100 import ScanSm100
 from .scan_sm90 import ScanSm90
 from .prologue import EST_WORDS, Decide, SampleWindows
 from .seed_prep import SeedPrep
@@ -119,9 +124,130 @@ def _elem(bf16: bool):
     return cutlass.BFloat16 if bf16 else cutlass.Uint8
 
 
+# ----------------------------------------------------------------------------------------------------------------
+# SM100
+# ----------------------------------------------------------------------------------------------------------------
+
+
+@functools.cache
+def _compile_scan_sm100(single_split: bool, bf16: bool, dense: bool):
+    num_q, num_q_heads, seq_len_kv, num_scales, cand_cap = (cute.sym_int() for _ in range(5))
+    elem = _elem(bf16)
+    return cute.compile(
+        ScanSm100(single_split=single_split, bf16=bf16, dense=dense),
+        make_fake_tensor(elem, (seq_len_kv, HEAD_DIM), divisibility=16),
+        make_fake_tensor(elem, (num_q_heads, HEAD_DIM, 1), divisibility=16, leading_dim=1),
+        make_fake_tensor(Float32, (num_q, NUM_HEADS), divisibility=4),
+        make_fake_tensor(Float32, (num_scales,), divisibility=4),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Float32, (num_q,)),
+        make_fake_tensor(Float32, (num_q,)),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Float32, (num_q, cand_cap)),
+        make_fake_tensor(Int32, (num_q, cand_cap)),
+        make_fake_tensor(Int32, (num_q,)),
+        Int32(0),
+        Int32(0),
+        Int32(0),
+        _stream(),
+        options="--enable-tvm-ffi",
+    )
+
+
+def _scan_sm100(q, kv, kv_scales, weights, ks, ke, origin, inv_delta, th_bucket, cand_val, cand_idx, cand_cnt,
+                dense: bool, q_operand=None):
+    num_q, seq_len_kv = q.shape[0], kv.shape[0]
+    num_splits = scan_kv_splits(num_q, seq_len_kv, sm_count(q.device.index))
+    bf16 = kv_scales is None
+    scales = unit_scales(kv) if bf16 else padded_scales(kv_scales)
+    _compile_scan_sm100(num_splits == 1 and not dense, bf16, dense)(
+        as_operand(kv), as_operand(q).view(num_q * NUM_HEADS, HEAD_DIM, 1), weights, scales, ks, ke, origin, inv_delta,
+        th_bucket, cand_val, cand_idx, cand_cnt, num_q, seq_len_kv, num_splits,
+    )
+
+
+@functools.cache
+def _compile_prune_sm100(bf16: bool):
+    num_q, pair_heads, seq_len_kv, num_scales, num_words = (cute.sym_int() for _ in range(5))
+    elem = _elem(bf16)
+    return cute.compile(
+        PruneSm100(bf16=bf16),
+        make_fake_tensor(elem, (seq_len_kv, HEAD_DIM), divisibility=16),
+        make_fake_tensor(elem, (pair_heads, HEAD_DIM, 1), divisibility=16, leading_dim=1),
+        make_fake_tensor(Float32, (num_q, PRUNE_COLS), divisibility=4),
+        make_fake_tensor(Float32, (num_scales,), divisibility=4),
+        make_fake_tensor(Float32, (num_scales,), divisibility=4),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Float32, (num_q,)),
+        make_fake_tensor(Float32, (num_q,)),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Float32, (num_q,)),
+        make_fake_tensor(Int32, (num_words,)),
+        Int32(0),
+        Int32(0),
+        Int32(0),
+        Int32(0),
+        _stream(),
+        options="--enable-tvm-ffi",
+    )
+
+
+@functools.cache
+def _compile_refine_sm100(bf16: bool):
+    num_q, num_q_heads, seq_len_kv, num_scales, num_words, cand_cap = (cute.sym_int() for _ in range(6))
+    elem = _elem(bf16)
+    return cute.compile(
+        RefineSm100(bf16=bf16),
+        make_fake_tensor(elem, (seq_len_kv, HEAD_DIM), divisibility=16),
+        make_fake_tensor(elem, (num_q_heads, HEAD_DIM, 1), divisibility=16, leading_dim=1),
+        make_fake_tensor(Float32, (num_q, NUM_HEADS), divisibility=4),
+        make_fake_tensor(Float32, (num_scales,), divisibility=4),
+        make_fake_tensor(Int32, (num_words,), divisibility=4),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Float32, (num_q,)),
+        make_fake_tensor(Float32, (num_q,)),
+        make_fake_tensor(Int32, (num_q,)),
+        make_fake_tensor(Float32, (num_q, cand_cap)),
+        make_fake_tensor(Int32, (num_q, cand_cap)),
+        make_fake_tensor(Int32, (num_q,)),
+        Int32(0),
+        Int32(0),
+        Int32(0),
+        Int32(0),
+        _stream(),
+        options="--enable-tvm-ffi",
+    )
+
+
 def _pruning_scales(kv, kv_scales, knsc):
     # The pruning kernel reads scales and key norms through one symbolic length: as long as knsc.
     return unit_scales(kv)[: knsc.numel()] if kv_scales is None else padded_scales(kv_scales)
+
+
+def _mask_sm100(q_prune, kv, kv_scales, knsc, w_prune, allowance, ks, ke, origin, inv_delta, th_bucket, mask):
+    num_q, seq_len_kv = ks.shape[0], kv.shape[0]
+    _compile_prune_sm100(kv_scales is None)(
+        as_operand(kv), as_operand(q_prune).view(-1, HEAD_DIM, 1), w_prune, _pruning_scales(kv, kv_scales, knsc),
+        knsc.reshape(-1), ks, ke, origin, inv_delta, th_bucket, allowance, mask.view(-1), num_q, seq_len_kv,
+        mask.shape[1], prune_kv_splits(num_q, seq_len_kv, PRUNE_BLOCK_Q, 1, sm_count(kv.device.index)),
+    )
+
+
+def _refine_sm100(q, kv, kv_scales, knsc, weights, mask, ks, ke, origin, inv_delta, th_bucket, cand_val, cand_idx,
+                  cand_cnt):
+    num_q, seq_len_kv = q.shape[0], kv.shape[0]
+    bf16 = kv_scales is None
+    mask_blocks = mask.shape[1]
+    min_splits = math.ceil(mask_blocks / refine_max_blocks(bf16))
+    _compile_refine_sm100(bf16)(
+        as_operand(kv), as_operand(q).view(num_q * NUM_HEADS, HEAD_DIM, 1), weights,
+        _pruning_scales(kv, kv_scales, knsc), mask.view(-1), ks, ke, origin, inv_delta, th_bucket, cand_val, cand_idx,
+        cand_cnt, num_q, seq_len_kv, mask_blocks,
+        prune_kv_splits(num_q, seq_len_kv, REFINE_BLOCK_Q, min_splits, sm_count(q.device.index)),
+    )
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -287,7 +413,7 @@ def _permute_rows(x: torch.Tensor, shape) -> torch.Tensor:
 
 
 # ----------------------------------------------------------------------------------------------------------------
-# The calls
+# Either architecture
 # ----------------------------------------------------------------------------------------------------------------
 
 
@@ -296,19 +422,20 @@ def scan(q, kv, kv_scales, weights, ks, ke, origin, inv_delta, th_bucket, cand_v
     inv_delta and th_bucket) to its candidates as (-score, kv index). cand_cnt[r] ends as the row's hit count (slots
     past the capacity are counted, not written); with KV splits it accumulates, so it must start at zero. BF16
     operands when kv_scales is None."""
-    _scan_sm90(q, kv, kv_scales, weights, ks, ke, origin, inv_delta, th_bucket, cand_val, cand_idx, cand_cnt,
-               dense=False)
+    run = _scan_sm90 if arch(q) == 9 else _scan_sm100
+    run(q, kv, kv_scales, weights, ks, ke, origin, inv_delta, th_bucket, cand_val, cand_idx, cand_cnt, dense=False)
 
 
 def scan_dense(q, kv, kv_scales, weights, ks, ke, out: torch.Tensor, scratch: torch.Tensor,
                q_operand: Optional[torch.Tensor] = None) -> None:
     """out[r, key] = row r's score of every key of its window [ks[r], ke[r]), in the scan's bits; other entries are
-    left as they were. scratch: any [num_q] 4-byte tensor (the gate's inputs, read and unused). q_operand, when
-    given, is q's operand already laid out (q_operand_sm90)."""
+    left as they were. scratch: any [num_q] 4-byte tensor (the gate's inputs, read and unused). On SM90 q_operand,
+    when given, is q's operand already laid out (q_operand_sm90)."""
     gate = scratch.view(torch.float32)
     bucket = scratch.view(torch.int32)
-    _scan_sm90(q, kv, kv_scales, weights, ks, ke, gate, gate, bucket, out, out.view(torch.int32), bucket, dense=True,
-               q_operand=q_operand)
+    run = _scan_sm90 if arch(q) == 9 else _scan_sm100
+    run(q, kv, kv_scales, weights, ks, ke, gate, gate, bucket, out, out.view(torch.int32), bucket, dense=True,
+        q_operand=q_operand)
 
 
 def prune_scan(q, q_prune, kv, kv_scales, knsc, weights, w_prune, allowance, ks, ke, origin, inv_delta, th_bucket,
@@ -332,7 +459,8 @@ def prune_mask(q_prune, kv, kv_scales, knsc, w_prune, allowance, ks, ke, origin,
     each 8-row half."""
     if mask is None:
         mask = torch.empty(mask_shape(ks.shape[0], kv.shape[0]), dtype=torch.int32, device=kv.device)
-    _mask_sm90(q_prune, kv, kv_scales, knsc, w_prune, allowance, ks, ke, origin, inv_delta, th_bucket, mask)
+    run = _mask_sm90 if arch(kv) == 9 else _mask_sm100
+    run(q_prune, kv, kv_scales, knsc, w_prune, allowance, ks, ke, origin, inv_delta, th_bucket, mask)
     return mask
 
 
@@ -340,8 +468,8 @@ def prune_refine(q, kv, kv_scales, knsc, weights, mask, ks, ke, origin, inv_delt
                  cand_cnt) -> None:
     """Pruning's second kernel: the full score of the keys the mask keeps, appended to the candidates as the scan
     would."""
-    _refine_sm90(q, kv, kv_scales, knsc, weights, mask, ks, ke, origin, inv_delta, th_bucket, cand_val, cand_idx,
-                 cand_cnt)
+    run = _refine_sm90 if arch(q) == 9 else _refine_sm100
+    run(q, kv, kv_scales, knsc, weights, mask, ks, ke, origin, inv_delta, th_bucket, cand_val, cand_idx, cand_cnt)
 
 
 @functools.lru_cache(maxsize=64)
@@ -508,12 +636,12 @@ def select_staged(stage_scores, stage_indices, row_map, scores, indices) -> None
 
 
 @functools.cache
-def _compile_triage(words_per_head: int):
+def _compile_triage(words_per_head: int, sm90: bool):
     num_q, slots_flat = cute.sym_int(), cute.sym_int()
     vec = (num_q,)
     slots = (RECOVERY_ROWS,)
     return cute.compile(
-        Triage(words_per_head),
+        Triage(words_per_head, sm90),
         make_fake_tensor(cutlass.Int64, (HEALTH_WORDS,)),
         make_fake_tensor(Int32, slots),
         make_fake_tensor(Int32, vec),
@@ -537,33 +665,40 @@ def _compile_triage(words_per_head: int):
 def triage(health, bad_rows, ks, ke, q, weights, row_map, slot_ks, slot_ke, q_gather, w_gather, whole_map, whole_ks,
            whole_ke) -> None:
     """Recovery's plan from the health (triage.py): per-row slots (map, windows, gathered q and weights; q_gather
-    holds the SM90 Q operand) and whole-call windows, each empty unless its recovery applies."""
+    holds the SM90 Q operand on SM90) and whole-call windows, each empty unless its recovery applies."""
     num_q = q.shape[0]
     words = q.contiguous().view(num_q, -1).view(torch.int32)
-    _compile_triage(words.shape[1] // NUM_HEADS)(
+    _compile_triage(words.shape[1] // NUM_HEADS, arch(q) == 9)(
         health, bad_rows, ks, ke, words, weights, row_map, slot_ks, slot_ke, q_gather, w_gather, whole_map, whole_ks,
         whole_ke, num_q)
 
 
-def warmup(bf16: bool, topk: int, words_per_head: int) -> None:
-    """Compile every SM90 kernel variant a selection with this dtype can take (each once per process)."""
-    for single_split in (True, False):
-        _compile_scan_sm90(bf16, single_split, False)
-        _compile_refine_sm90(bf16, single_split)
-    _compile_scan_sm90(bf16, False, True)
-    _compile_prune_sm90(bf16)
+def warmup(arch_major: int, bf16: bool, topk: int, words_per_head: int) -> None:
+    """Compile every kernel variant a selection on this architecture and dtype can take (each once per process)."""
+    if arch_major == 9:
+        for single_split in (True, False):
+            _compile_scan_sm90(bf16, single_split, False)
+            _compile_refine_sm90(bf16, single_split)
+        _compile_scan_sm90(bf16, False, True)
+        _compile_prune_sm90(bf16)
+    else:
+        for single_split in (True, False):
+            _compile_scan_sm100(single_split, bf16, False)
+        _compile_scan_sm100(False, bf16, True)
+        _compile_prune_sm100(bf16)
+        _compile_refine_sm100(bf16)
     _compile_sample_windows()
     _compile_decide()
     _compile_seed_prep()
     for source in (CANDIDATES, DENSE, STAGED):
         _compile_select(topk, source)
-    _compile_triage(words_per_head)
+    _compile_triage(words_per_head, arch_major == 9)
 
 
 def supported(q: torch.Tensor, kv: Optional[torch.Tensor] = None) -> bool:
-    """The kernels' shapes: [num_q, 32, 128] queries, 128-wide keys, FP8 or BF16, on SM90."""
+    """The kernels' shapes: [num_q, 32, 128] queries, 128-wide keys, FP8 or BF16, on SM90 or SM100."""
     if not q.is_cuda or q.dim() != 3 or q.shape[1] != NUM_HEADS or q.shape[2] != HEAD_DIM:
         return False
-    if q.dtype not in (torch.float8_e4m3fn, torch.bfloat16) or arch(q) != 9:
+    if q.dtype not in (torch.float8_e4m3fn, torch.bfloat16) or arch(q) not in (9, 10):
         return False
     return kv is None or (kv.dim() == 2 and kv.shape[1] == HEAD_DIM and kv.dtype == q.dtype)

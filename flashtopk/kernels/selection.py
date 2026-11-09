@@ -48,8 +48,8 @@ _UNROLL = 4
 # What a CTA selects from: a row's candidate buffer (the scan's -score, kv index pairs), a slice of a row of dense
 # scores (recovery; the index is the column), or the per-slice selections of a row (recovery's second stage).
 CANDIDATES, DENSE, STAGED = 0, 1, 2
-# Six CTAs an SM: the register budget that keeps the sweeps' loads in flight without spilling the sort (measured
-# against four and eight).
+# Six CTAs an SM: the register budget that keeps the sweeps' loads in flight without spilling the sort (measured on
+# SM100 against four and eight).
 MIN_BLOCKS = 6
 
 

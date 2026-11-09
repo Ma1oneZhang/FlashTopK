@@ -15,7 +15,7 @@ def gpu_arch():
     return torch.cuda.get_device_capability()[0]
 
 
-requires_gpu = pytest.mark.skipif(gpu_arch() != 9, reason="needs an SM90 GPU")
+requires_gpu = pytest.mark.skipif(gpu_arch() not in (9, 10), reason="needs an SM90 or SM100 GPU")
 DTYPES = [pytest.param(torch.float8_e4m3fn, id="fp8"), pytest.param(torch.bfloat16, id="bf16")]
 
 

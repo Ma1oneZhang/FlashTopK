@@ -71,13 +71,14 @@ class Recovery:
     def run(self, q, kv, kv_scales, weights, ks, ke, health, bad_rows, scores, indices) -> None:
         """Enqueue the recovery of this call's selection (scores / indices, its health and bad-row table)."""
         num_q, seq_len_kv = q.shape[0], kv.shape[0]
+        sm90 = launch.arch(q) == 9
         launch.triage(health, bad_rows, ks, ke, q, weights, self.row_map, self.slot_ks, self.slot_ke, self.q_gather,
                       self.w_gather, self.whole_map[:num_q], self.whole_ks[:num_q], self.whole_ke[:num_q])
 
         # per-row: the gathered slots
         dense = self.arena[: RECOVERY_ROWS * seq_len_kv].view(RECOVERY_ROWS, seq_len_kv)
         q_slots = self.q_gather.view(q.dtype).view(RECOVERY_ROWS, NUM_HEADS, HEAD_DIM)
-        operand = launch.as_operand(q_slots).view(-1, HEAD_DIM, 1)
+        operand = launch.as_operand(q_slots).view(-1, HEAD_DIM, 1) if sm90 else None
         launch.scan_dense(q_slots, kv, kv_scales, self.w_gather, self.slot_ks, self.slot_ke, dense,
                           self.scratch[:RECOVERY_ROWS], q_operand=operand)
         splits = min(self.max_splits, recovery_splits(seq_len_kv))
@@ -91,12 +92,14 @@ class Recovery:
 
         # whole call, `chunk` rows at a time
         chunk = dense_rows(self.arena.numel(), seq_len_kv, num_q)
-        full_operand = launch.q_operand_sm90(q)
+        full_operand = launch.q_operand_sm90(q) if sm90 else None
         for off in range(0, num_q, chunk):
             rows = min(chunk, num_q - off)
             dense = self.arena[: rows * seq_len_kv].view(rows, seq_len_kv)
             part = slice(off, off + rows)
-            operand = full_operand[off * NUM_HEADS: (off + math.ceil(rows / NEXT_N) * NEXT_N) * NUM_HEADS]
+            operand = None
+            if sm90:
+                operand = full_operand[off * NUM_HEADS: (off + math.ceil(rows / NEXT_N) * NEXT_N) * NUM_HEADS]
             launch.scan_dense(q[part], kv, kv_scales, weights[part], self.whole_ks[part], self.whole_ke[part], dense,
                               self.scratch[:rows], q_operand=operand)
             launch.select_dense(dense, self.whole_ks[part], self.whole_ke[part], self.whole_map[part], scores,

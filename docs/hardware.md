@@ -1,6 +1,6 @@
 # Hardware and model support
 
-FlashTopK runs on NVIDIA Hopper (SM90) GPUs, with FP8 or BF16 operands. The kernels target SM90; adaptive pruning's cost model (`PRUNE_COSTS` in [`flashtopk/plan.py`](../flashtopk/plan.py)) follows the GPU itself.
+FlashTopK runs on NVIDIA Hopper (SM90) and Blackwell (SM100) GPUs, with FP8 or BF16 operands. The kernels follow the GPU's architecture; adaptive pruning's cost model (`PRUNE_COSTS` in [`flashtopk/plan.py`](../flashtopk/plan.py)) follows the GPU itself.
 
 | GPU | architecture | FP8 | BF16 |
 |---|---|:---:|:---:|
@@ -9,6 +9,9 @@ FlashTopK runs on NVIDIA Hopper (SM90) GPUs, with FP8 or BF16 operands. The kern
 | H100 | SM90 (9.0) | ✅ | ✅ |
 | H200 | SM90 (9.0) | ✅ | ✅ |
 | other SM90 | SM90 (9.0) | ↩️ H800 | ↩️ H800 |
+| B200 | SM100 (10.0) | ✅ | ✅ |
+| GB200 | SM100 (10.0) | ↩️ B200 | ↩️ B200 |
+| B300, GB300 | SM100 (10.3) | ↩️ B200 | ↩️ B200 |
 
 * ✅ **Tuned:** tested, with its own `PRUNE_COSTS` entry.
 * ↩️ **Falls back:** uses the `PRUNE_COSTS` of the GPU after the arrow.
@@ -27,8 +30,8 @@ FlashTopK takes indexers with 32 heads of dimension 128 and a ReLU per head; `to
 
 ## How a GPU is matched
 
-1. A word of `torch.cuda.get_device_name()` names a `PRUNE_COSTS` entry (or a `DEVICE_ALIASES` alias of one): that entry, for the call's operand type.
-2. Otherwise the SM90 default: H800's entry.
+1. A word of `torch.cuda.get_device_name()` names a `PRUNE_COSTS` entry: that entry, for the call's operand type.
+2. Otherwise the architecture's default: B200's entry on SM100, H800's on SM90.
 3. `FLASHTOPK_PRUNE_COSTS="p,c,b"` overrides both, for every call.
 
 `FLASHTOPK_PRUNING=off` (or `Selector(pruning="off")`) skips the decision and always scans, which makes the cost model irrelevant.

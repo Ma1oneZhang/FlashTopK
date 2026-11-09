@@ -1,11 +1,11 @@
 # FlashTopK performance report
 
-FlashTopK against dense scoring + FlashInfer top-k and two public top-k selectors. See the [README](../README.md) for installation and usage.
+FlashTopK against dense scoring + FlashInfer top-k and five public top-k selectors. See the [README](../README.md) for installation and usage.
 
 ## Setup
 
-* **GPUs:** H800 and H20, with FP8 and BF16 operands.
-* **Inputs:** a trained GLM-5.1 indexer (layers 24 and 48), an untrained one at initialization (the same layers), and random indexer weights and keys. The model sets are SGLang's indexer inputs over the first 1M tokens of the InfiniteBench document `longbook_qa_chn` #123; [`reproduce/`](../reproduce/README.md) regenerates them and reruns every number and figure here.
+* **GPUs:** an SM100 GPU, H800 and H20, with FP8 and BF16 operands.
+* **Inputs:** a trained GLM-5.1 indexer (layers 24 and 48), an untrained one at initialization (the same layers), and random indexer weights and keys. The model sets are SGLang's indexer inputs over the first 1M tokens of the InfiniteBench document `longbook_qa_chn` #123; [`reproduce/`](../reproduce/README.md) regenerates them and reruns the H800 and H20 numbers and figures here.
 * **Calls:** one full causal prefill per sequence, query rows = keys = 128K, 192K, 256K, 512K, 768K or 1M; `topk = 2048`. Each method splits the prefill as it does on its own (below).
 * **Timing:** every method back to back on the same GPU and calls; CUDA events, the median of 3 runs after 1 warmup. A bar is the geometric mean over the calls of one length that the method finished.
 * **Exactness:** 8192 rows of every call (the last 4096 and 16 blocks of 256 spread over the rest) against the top-k of the dense FP32 scores, and the first 2047 rows, whose windows hold fewer than `topk` keys and must select all of them.
@@ -19,65 +19,78 @@ How each method splits a full prefill:
 |---|---|
 | **FlashTopK** | `chunk_size` rows at a time; the default, 65536, is the smallest size within 2% of the fastest on every GPU measured |
 | dense scoring + FlashInfer top-k, HPC-Ops, DeepSelect | row blocks whose FP32 score table fits in 35% of free memory, in whole 4096-row blocks |
+| LiteTopK through vLLM | 8192-row calls, as its vLLM integration makes them; a call under 192K keys takes the baseline |
+| LiteTopK through SGLang | 16384-row chunks, SGLang's chunked prefill size on SM100 |
+| DoSA | 16384-row chunks through SGLang; a chunk under 128K keys takes SGLang's dense path |
 
 ## Methods
 
 | method | version measured | GPUs, operands | deterministic | exact |
 |---|---|---|---|---|
-| **FlashTopK** | this repository | SM90; FP8, BF16 | bit for bit | yes |
-| dense scoring + [HPC-Ops](https://github.com/Tencent/hpc-ops) `hpc.topk` | HPC-Ops `2a2e265` | SM90; FP8, BF16 | no: 72% of reruns select another set | yes |
-| dense scoring + [DeepSelect](https://github.com/deepseek-ai/DeepSelect) `deep_select.topk` | DeepSelect `bfa4507` | SM90; FP8, BF16 | bit for bit | yes |
-| dense scoring + FlashInfer top-k | [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM) 0.2.2, [cuDNN frontend](https://github.com/NVIDIA/cudnn-frontend) 1.25.0, [FlashInfer](https://github.com/flashinfer-ai/flashinfer) 0.7.1 | SM90; FP8, BF16 | no: 80% | yes |
+| **FlashTopK** | this repository | SM90, SM100; FP8, BF16 | bit for bit | yes |
+| [LiteTopK](https://github.com/Heisenberg-Yin/LiteTopK) through vLLM ([#48726](https://github.com/vllm-project/vllm/pull/48726)) | vLLM `c718468` | SM100; FP8 | no: 87% of reruns select another set | no: 2.1% of rows |
+| LiteTopK through SGLang ([#32094](https://github.com/sgl-project/sglang/pull/32094)) | SGLang `09832cf` | SM100; FP8 | no: 80% | no: 14.2% of rows |
+| [DoSA](https://github.com/llm-sys/dosa-sglang) (`FewBackend`) | dosa-sglang `bdfa44a` | SM100; FP8 | no: 42% | yes |
+| dense scoring + [HPC-Ops](https://github.com/Tencent/hpc-ops) `hpc.topk` | HPC-Ops `2a2e265` | SM90, SM100; FP8, BF16 | no: 71% | yes |
+| dense scoring + [DeepSelect](https://github.com/deepseek-ai/DeepSelect) `deep_select.topk` | DeepSelect `bfa4507` | SM90, SM100; FP8, BF16 | bit for bit | yes |
+| dense scoring + FlashInfer top-k | [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM) 0.2.2, [cuDNN frontend](https://github.com/NVIDIA/cudnn-frontend) 1.25.0, [FlashInfer](https://github.com/flashinfer-ai/flashinfer) 0.7.1 | SM90, SM100; FP8, BF16 | no: 80% | yes |
 
 * **Deterministic:** the share of reruns that selected a different set (two reruns per call, on prefill chunks of 4K-32K rows).
-* **Exact:** the row matches the top-k of the dense FP32 scores, up to keys within 1e-5 of the k-th score. No method returned a wrong row. FlashTopK's different FP32 summation order moves 0.05% of its checked rows within that margin; the baseline's own ties move 0.03%.
+* **Exact:** the row matches the top-k of the dense FP32 scores, up to keys within 1e-5 of the k-th score; the share is of the checked rows. Only LiteTopK returned wrong rows. FlashTopK's different FP32 summation order moves 0.04% of its checked rows within that margin, as do the baseline's own ties.
+* **LiteTopK through vLLM** traps on the random 1M call (no bar there).
 
 ## Results
 
 ### Trained indexer
 
+![FlashTopK against public top-k selectors on a trained indexer, SM100](../assets/performance_trained_sm100.png)
+
 ![FlashTopK against public top-k selectors on a trained indexer, H800](../assets/performance_trained_h800.png)
 
 ![FlashTopK against public top-k selectors on a trained indexer, H20](../assets/performance_trained_h20.png)
 
-FlashTopK is the fastest at every length, GPU and operand type, and its lead grows with the length: on H800 FP8, 2.2x the baseline at 128K and 3.0x at 1M. HPC-Ops and DeepSelect keep the score table and stay at 1.1-1.6x.
+FlashTopK is the fastest at every length, GPU and operand type, and its lead grows with the length: on SM100 FP8, 2.1x the baseline at 128K and 3.3x at 1M. HPC-Ops and DeepSelect keep the score table and stay at 1.1-1.9x; DoSA reaches 2.3-2.4x from 768K.
 
 ### Untrained indexer
+
+![FlashTopK against public top-k selectors on an untrained indexer, SM100](../assets/performance_untrained_sm100.png)
 
 ![FlashTopK against public top-k selectors on an untrained indexer, H800](../assets/performance_untrained_h800.png)
 
 ![FlashTopK against public top-k selectors on an untrained indexer, H20](../assets/performance_untrained_h20.png)
 
-The score bound skips few keys, so FlashTopK mostly scans; it still leads at 1.2-2.0x the baseline.
+The score bound skips few keys, so FlashTopK mostly scans; it still leads at 1.2-2.4x the baseline. DoSA always prunes and stays at 0.91-1.07x on SM100 FP8.
 
 ### Random indexer weights and keys
+
+![FlashTopK against public top-k selectors on random indexer weights and keys, SM100](../assets/performance_random_sm100.png)
 
 ![FlashTopK against public top-k selectors on random indexer weights and keys, H800](../assets/performance_random_h800.png)
 
 ![FlashTopK against public top-k selectors on random indexer weights and keys, H20](../assets/performance_random_h20.png)
 
-No structure at all; FlashTopK still leads at every length.
+No structure at all; FlashTopK still leads at every length. DoSA prunes almost nothing and falls to 0.28x at 1M.
 
 ### Memory
 
-FlashTopK holds no score table. Its workspace is about 8 * min(rows, chunk_size) * max(4 * topk, 16384) bytes: 8 GiB at the default `chunk_size`, at any length. At 1M a call holds about 10 GiB beside its operands and its 8 GiB of indices: the workspace and a 0.5 GiB buffer of one slice's scores. `return_scores=True` returns every row's scores as well, 7.5 GiB more. The baseline holds a 16 GiB score table per 4096-row block at 1M keys, and 35% of free memory allows one block on H800 and H20.
+FlashTopK holds no score table. Its workspace is about 8 * min(rows, chunk_size) * max(4 * topk, 16384) bytes: 8 GiB at the default `chunk_size`, at any length. At 1M a call holds about 10 GiB beside its operands and its 8 GiB of indices: the workspace and a 0.5 GiB buffer of one slice's scores. `return_scores=True` returns every row's scores as well, 7.5 GiB more. The baseline holds a 16 GiB score table per 4096-row block at 1M keys: one block on H800 and H20, three on SM100, as many as 35% of free memory allows. DoSA holds 10 GiB, LiteTopK about 3 GiB.
 
 ### Time of one full prefill
 
 FlashTopK / dense scoring + FlashInfer top-k on the trained indexer (the median over its two layers):
 
-| length | H800 FP8 | H800 BF16 | H20 FP8 | H20 BF16 |
-|---:|---:|---:|---:|---:|
-| 128K | 68.2 / 148 ms | 101 / 241 ms | 200 / 350 ms | 371 / 645 ms |
-| 192K | 134 / 322 ms | 195 / 528 ms | 399 / 782 ms | 753 / 1454 ms |
-| 256K | 216 / 565 ms | 319 / 928 ms | 662 / 1384 ms | 1264 / 2574 ms |
-| 512K | 738 / 2213 ms | 1119 / 3636 ms | 2394 / 5488 ms | 4.66 / 10.4 s |
-| 768K | 1617 / 4925 ms | 2479 / 8115 ms | 5.33 / 12.4 s | 10.4 / 23.1 s |
-| 1M | 2912 / 8580 ms | 4.46 / 14.3 s | 9.55 / 22.7 s | 18.8 / 42.5 s |
+| length | SM100 FP8 | SM100 BF16 | H800 FP8 | H800 BF16 | H20 FP8 | H20 BF16 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 128K | 39.7 / 83.4 ms | 57.1 / 131 ms | 68.2 / 148 ms | 101 / 241 ms | 200 / 350 ms | 371 / 645 ms |
+| 192K | 77.6 / 190 ms | 117 / 284 ms | 134 / 322 ms | 195 / 528 ms | 399 / 782 ms | 753 / 1454 ms |
+| 256K | 126 / 338 ms | 184 / 508 ms | 216 / 565 ms | 319 / 928 ms | 662 / 1384 ms | 1264 / 2574 ms |
+| 512K | 420 / 1352 ms | 637 / 2053 ms | 738 / 2213 ms | 1119 / 3636 ms | 2394 / 5488 ms | 4.66 / 10.4 s |
+| 768K | 906 / 3061 ms | 1405 / 4541 ms | 1617 / 4925 ms | 2479 / 8115 ms | 5.33 / 12.4 s | 10.4 / 23.1 s |
+| 1M | 1623 / 5317 ms | 2532 / 8261 ms | 2912 / 8580 ms | 4.46 / 14.3 s | 9.55 / 22.7 s | 18.8 / 42.5 s |
 
 ## Run the benchmark
 
-To rerun the full comparison against FlashInfer, HPC-Ops and DeepSelect, follow [`reproduce/README.md`](../reproduce/README.md). It includes pinned dependencies, input generation and downloads, benchmark commands that generate performance records locally, and figure generation.
+To rerun the H800 and H20 comparison against FlashInfer, HPC-Ops and DeepSelect, follow [`reproduce/README.md`](../reproduce/README.md). It includes pinned dependencies, input generation and downloads, benchmark commands that generate performance records locally, and figure generation.
 
 [`benchmarks/bench.py`](../benchmarks/bench.py) times FlashTopK on your GPU:
 
