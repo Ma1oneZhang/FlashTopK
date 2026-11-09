@@ -1,5 +1,5 @@
 # Copyright (c) 2026 the FlashTopK authors. Licensed under the Apache License, Version 2.0.
-"""What the SM90 kernels share: the indexer's shape, the tiling the host side plans with, and PTX
+"""What the kernels of every architecture share: the indexer's shape, the tiling the host side plans with, and PTX
 helpers. Every float operation names its rounding, so no compiler choice (contraction, fast math) can change a bit."""
 
 from __future__ import annotations

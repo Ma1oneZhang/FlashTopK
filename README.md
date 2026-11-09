@@ -27,7 +27,7 @@ On a full prefill, FlashTopK is 1.7-3.3x faster than dense scoring + FlashInfer 
 
 | Sparse attention | Models | GPUs | Operands |
 |---|---|---|---|
-| Token-level selection, as in [DeepSeek Sparse Attention (DSA)](https://arxiv.org/abs/2512.02556) | [GLM-5.1](https://huggingface.co/zai-org/GLM-5.1), [GLM-5.2](https://huggingface.co/zai-org/GLM-5.2), [GLM-5.3](https://huggingface.co/zai-org/GLM-5.3), [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash), [Hy4-preview](https://huggingface.co/tencent/Hy4-preview): indexers of 32 heads × 128 | NVIDIA Hopper (SM90): H800, H20, H100, H200 | FP8 or BF16, `topk` up to 4096 |
+| Token-level selection, as in [DeepSeek Sparse Attention (DSA)](https://arxiv.org/abs/2512.02556) | [GLM-5.1](https://huggingface.co/zai-org/GLM-5.1), [GLM-5.2](https://huggingface.co/zai-org/GLM-5.2), [GLM-5.3](https://huggingface.co/zai-org/GLM-5.3), [GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash), [Hy4-preview](https://huggingface.co/tencent/Hy4-preview): indexers of 32 heads × 128 | NVIDIA Hopper (SM90): H800, H20, H100, H200; NVIDIA SM100 and SM103 | FP8 or BF16, `topk` up to 4096 |
 
 [Hardware and model support](docs/hardware.md) lists which GPUs are tuned.
 
@@ -35,7 +35,7 @@ On a full prefill, FlashTopK is 1.7-3.3x faster than dense scoring + FlashInfer 
 
 ### Install
 
-FlashTopK needs Python 3.10+, PyTorch 2.6+, Triton 3.3+ and CuTe DSL (`nvidia-cutlass-dsl`) 4.5+.
+FlashTopK needs Python 3.10+, PyTorch 2.6+, Triton 3.3+ and CuTe DSL (`nvidia-cutlass-dsl`) 4.5+. SM100 GPUs also need a CUDA 12.8+ driver.
 
 ```bash
 pip install -e .            # torch >= 2.6, triton >= 3.3, nvidia-cutlass-dsl >= 4.5, apache-tvm-ffi
@@ -85,7 +85,7 @@ The [API reference](docs/api.md) covers every argument, the workspace, `last_inf
 
 ## Performance
 
-Speedup of one full prefill (query rows = keys = the sequence length) over dense scoring + FlashInfer top-k on H800, with FP8 or BF16 operands. The [performance report](docs/performance.md) has H20 as well.
+Speedup of one full prefill (query rows = keys = the sequence length) over dense scoring + FlashInfer top-k on H800, with FP8 or BF16 operands. The [performance report](docs/performance.md) has H20 and SM100 as well.
 
 ### Trained indexer
 
@@ -113,7 +113,7 @@ FlashTopK is released under the Apache License 2.0. See [`LICENSE`](LICENSE) and
 
 ## Acknowledgments
 
-FlashTopK builds on [LiteTopK](https://github.com/Heisenberg-Yin/LiteTopK) (gate calibration and candidate selection) and [DoSA](https://arxiv.org/abs/2610.13990) (the score bound of key pruning). [`NOTICE`](NOTICE) lists the files each part derives from.
+FlashTopK builds on [FlashInfer](https://github.com/flashinfer-ai/flashinfer) and [TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM) (the SM100 scan pipeline, which the pruning and refine kernels share), [LiteTopK](https://github.com/Heisenberg-Yin/LiteTopK) (gate calibration and candidate selection) and [DoSA](https://arxiv.org/abs/2610.13990) (the score bound of key pruning). [`NOTICE`](NOTICE) lists the files each part derives from.
 
 ## Citation
 

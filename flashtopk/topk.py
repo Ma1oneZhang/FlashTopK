@@ -104,7 +104,7 @@ def windows_from_cu_seqlens(cu_seqlens_q: torch.Tensor, cu_seqlens_k: torch.Tens
 
 def supported(q: torch.Tensor, kv: Optional[torch.Tensor] = None) -> bool:
     """Whether the kernels take these operands: [num_q, 32, 128] queries and [seq_len_kv, 128] keys, both FP8 E4M3
-    or both BF16, on an SM90 GPU."""
+    or both BF16, on an SM90 or SM100 GPU."""
     return launch.supported(q, kv)
 
 
@@ -185,7 +185,8 @@ class Selector:
         never compiles one (the Triton planner compiles at its first use and caches on disk)."""
         if warmup:
             words_per_head = 128 * torch.empty((), dtype=self.dtype).element_size() // 4
-            launch.warmup(self.dtype == torch.bfloat16, self.topk, words_per_head)
+            launch.warmup(torch.cuda.get_device_capability(self.device)[0], self.dtype == torch.bfloat16, self.topk,
+                          words_per_head)
         max_rows = min(max_rows, self.chunk_size)
         max_rows, max_kv = max(max_rows, self.max_rows), max(max_kv, self.max_kv)
         if max_rows == self.max_rows and max_kv == self.max_kv and self._arena is not None:
@@ -221,7 +222,7 @@ class Selector:
             raise ValueError(f"q is on {q.device}, the selector on {self.device}")
         if not launch.supported(q, kv):
             raise ValueError(f"unsupported operands: q {tuple(q.shape)} {q.dtype}, kv {tuple(kv.shape)} {kv.dtype} on "
-                             f"SM{launch.arch(q)}0 (need [num_q, 32, 128] and [seq_len_kv, 128], SM90)")
+                             f"SM{launch.arch(q)}0 (need [num_q, 32, 128] and [seq_len_kv, 128], SM90 or SM100)")
         num_q = q.shape[0]
         if weights.shape != (num_q, 32) or weights.dtype != torch.float32:
             raise ValueError(f"weights must be float32 [{num_q}, 32], got {weights.dtype} {tuple(weights.shape)}")

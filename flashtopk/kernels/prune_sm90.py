@@ -2,18 +2,18 @@
 """SM90 FlashTopK key pruning in CuTe DSL (FP8 or BF16, 32 heads): the score upper bound, the first of pruning's two
 kernels.
 
-The work split runs on scan_sm90.py's pipeline: 16-row tiles of the pruning operand (16 pruning columns a row), one
-M=64 x N=256 WGMMA per 64-key block, the two math warpgroups taking alternate blocks in turn (named barriers 2 and 3),
-warps 8 and 9 the TMA of each group's ring (KV, kv scales, key norms). A thread of the accumulator holds columns
-8i + 2l + e (l = lane % 4) of two keys, so the operand's rows are permuted (``n_of``) for lane l to hold rows
-4l .. 4l + 3 whole: each lane forms its rows' bounds alone, no lane exchange,
+The SM100 pruning work split (prune_sm100.py) on scan_sm90.py's pipeline: 16-row tiles of the pruning operand (16
+pruning columns a row), one M=64 x N=256 WGMMA per 64-key block, the two math warpgroups taking alternate blocks in
+turn (named barriers 2 and 3), warps 8 and 9 the TMA of each group's ring (KV, kv scales, key norms). A thread of the
+accumulator holds columns 8i + 2l + e (l = lane % 4) of two keys, so the operand's rows are permuted (``n_of``) for
+lane l to hold rows 4l .. 4l + 3 whole: each lane forms its rows' bounds alone, no lane exchange,
 
     s_k * (sum_{c < 14} relu(x_c) w_c - relu(x_14 w_14 + x_15 w_15)) + allowance * (s_k ||k||)
 
 as two interleaved fma(max(x, 0), w, .) chains over the retained columns plus the aggregate's relu. FP32 rounding in
 any order is inside plan.SCREEN_ROUNDING. A key is kept for an 8-row half when some row's bound passes its raw gate
 (NaN keeps) within its window: each warp covers 16 consecutive keys, so it writes its half of a mask word directly
-(mask[2 * tile + half][block][4], one bit per key, launch.mask_shape). The CTA's range starts on a 128-key block and
+(mask[2 * tile + half][block][4], one bit per key, as prune_sm100.py). The CTA's range starts on a 128-key block and
 covers whole blocks, so every word the refine reads is written. Like the scan, a group issues its next block's WGMMA
 once the partials are formed, before reducing them.
 """

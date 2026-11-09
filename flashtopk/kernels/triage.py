@@ -5,7 +5,7 @@ A call is healthy, or it has a few bad rows (at most RECOVERY_ROWS, recorded by 
 
   * CTA s < RECOVERY_ROWS is slot s of per-row recovery. With a few bad rows, slot s takes the s-th smallest bad row
     (sorted, so the recovery's work does not depend on the order the rows went bad): its output row in row_map, its
-    window, its q rows and weights gathered (q in the SM90 kernels' operand layout). Otherwise its map entry
+    window, its q rows and weights gathered (q in the SM90 kernels' operand layout on SM90). Otherwise its map entry
     is -1 and its window empty.
   * The other CTAs cover the call's rows for whole-call recovery: with many bad rows every row maps to itself and
     keeps its window; otherwise the map is -1 and the windows are empty.
@@ -28,8 +28,9 @@ from .simt import THREADS
 
 
 class Triage:
-    def __init__(self, words_per_head: int):
+    def __init__(self, words_per_head: int, sm90: bool):
         self.words_per_head = words_per_head
+        self.sm90 = sm90
 
     @cute.jit
     def __call__(
@@ -94,13 +95,15 @@ class Triage:
                 mSke[slot] = e
             if row >= 0:
                 for i in cutlass.range(tid, NUM_HEADS * wph, THREADS, unroll=4):
-                    # scan_sm90.q_n_of: row 2b + a, head 2c + e of an 8-row tile is operand row
-                    # 128a + 8c + 2b + e.
-                    head = i // wph
-                    r = slot % NEXT_N
-                    op_row = (slot // NEXT_N) * (NEXT_N * NUM_HEADS) + 128 * (r % 2) + 8 * (head // 2) \
-                        + 2 * (r // 2) + head % 2
-                    dst = op_row * wph + (i - head * wph)
+                    dst = slot * (NUM_HEADS * wph) + i
+                    if cutlass.const_expr(self.sm90):
+                        # scan_sm90.q_n_of: row 2b + a, head 2c + e of an 8-row tile is operand row
+                        # 128a + 8c + 2b + e.
+                        head = i // wph
+                        r = slot % NEXT_N
+                        op_row = (slot // NEXT_N) * (NEXT_N * NUM_HEADS) + 128 * (r % 2) + 8 * (head // 2) \
+                            + 2 * (r // 2) + head % 2
+                        dst = op_row * wph + (i - head * wph)
                     mQg[dst] = mQ[(row, i)]
                 if tid < NUM_HEADS:
                     mWg[(slot, tid)] = mW[(row, tid)]

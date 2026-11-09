@@ -72,11 +72,15 @@ assert EST_WORDS == 2 * (_PLAN_SAMPLES // 32)
 # constant gate planned FP8 aggregate rows and allowances differently (survival estimates up to 5x off, and twice the
 # refine work).
 @triton.jit
-def _operand_row(row, col):
-    """Where row `row`, column `col` of the pruning operand goes: 16-row tiles permuted by prune_sm90.n_of (row 4b + a,
-    column 2d + e of a tile is operand row 64a + 8d + 2b + e)."""
-    r = row % 16
-    return (row // 16) * 256 + 64 * (r % 4) + 8 * (col // 2) + 2 * (r // 4) + col % 2
+def _operand_row(row, col, LAYOUT: tl.constexpr):
+    """Where row `row`, column `col` of the pruning operand goes: SM100 (LAYOUT 1) takes row pairs column by column,
+    [pair, column, row of pair]; SM90 (LAYOUT 2) 16-row tiles permuted by prune_sm90.n_of (row 4b + a, column
+    2d + e of a tile is operand row 64a + 8d + 2b + e)."""
+    if LAYOUT == 1:
+        return (row // 2) * 32 + col * 2 + row % 2
+    else:
+        r = row % 16
+        return (row // 16) * 256 + 64 * (r % 4) + 8 * (col // 2) + 2 * (r // 4) + col % 2
 
 
 @triton.jit
@@ -114,6 +118,7 @@ def _plan_kernel(
     S: tl.constexpr,
     G: tl.constexpr,
     BF16: tl.constexpr,  # bf16 operands: the aggregate as two bf16 rows (scale 1)
+    LAYOUT: tl.constexpr,  # the operand's layout (_operand_row)
 ):
     pid = tl.program_id(0).to(tl.int64)
     row = pid
@@ -131,7 +136,7 @@ def _plan_kernel(
     if row >= num_q:
         if row < padded:
             c = tl.arange(0, R + 2)
-            tl.store(QS + _operand_row(row, c)[:, None] * 128 + d[None, :],
+            tl.store(QS + _operand_row(row, c, LAYOUT)[:, None] * 128 + d[None, :],
                      tl.zeros([R + 2, 128], dtype=QS.dtype.element_ty))
         return
     h = tl.arange(0, H)
@@ -246,9 +251,9 @@ def _plan_kernel(
         tl.store(EST + est_slot * (S // 16) + S // 32 + w8, pass_words.to(tl.uint32).to(tl.int32, bitcast=True))
 
     slot = tl.where(kept, rank, R)
-    tl.store(QS + _operand_row(row, slot)[:, None] * 128 + d[None, :], q8, mask=kept[:, None])
-    tl.store(QS + _operand_row(row, R) * 128 + d, a8_hi)
-    tl.store(QS + _operand_row(row, R + 1) * 128 + d, a8_lo)
+    tl.store(QS + _operand_row(row, slot, LAYOUT)[:, None] * 128 + d[None, :], q8, mask=kept[:, None])
+    tl.store(QS + _operand_row(row, R, LAYOUT) * 128 + d, a8_hi)
+    tl.store(QS + _operand_row(row, R + 1, LAYOUT) * 128 + d, a8_lo)
     tl.store(WS + row * (R + 2) + slot, wt, mask=kept)
     tl.store(WS + row * (R + 2) + R, scale_hi)
     tl.store(WS + row * (R + 2) + R + 1, scale_lo)
@@ -298,7 +303,9 @@ class _Plan:
         num_q, heads, dim = q.shape
         nk = kv.shape[0]
         dev = q.device
-        self.padded = triton.cdiv(num_q, 16) * 16
+        self.layout = 2 if torch.cuda.get_device_capability(dev)[0] == 9 else 1
+        group = 16 if self.layout == 2 else 2
+        self.padded = triton.cdiv(num_q, group) * group
         self.q_prune = torch.empty(self.padded * PRUNE_COLUMNS, dim, dtype=q.dtype, device=dev)
         self.w_prune = torch.empty(num_q, PRUNE_COLUMNS, dtype=torch.float32, device=dev)
         self.allowance = torch.empty(num_q, dtype=torch.float32, device=dev)
@@ -336,7 +343,7 @@ class _Plan:
             th_bucket, self.q_prune, self.w_prune, self.allowance, self.est, ks if flag is None else flag,
             num_q, self.padded, SCREEN_ROUNDING + _PLAN_ROUNDING, int(estimate), int(flag is not None),
             estimate_stride(num_q), H=q.shape[1], R=PRUNE_COLUMNS - 2, S=_PLAN_SAMPLES, G=EST_GROUP, BF16=self.bf16,
-            num_warps=4,
+            LAYOUT=self.layout, num_warps=4,
         )
 
     def scales_or(self, kv: torch.Tensor) -> torch.Tensor:
@@ -380,9 +387,11 @@ ADAPTIVE_MIN_KEYS = 128 * 1024
 # Pruning's kernels over the scan's, per call: p * 128K / L (key norms and the plan, per row as the scan is per key)
 # + c (the mask, a fixed share, and the refine's fixed part) + b * U (the refine of the kept share U of the row
 # groups' windows: estimate_shares' union). Least squares over each stage's measured times on trained and
-# initialized indexers and random weights and keys, per device and operand type; an SM90 device not listed takes
-# H800's entry.
+# initialized indexers and random weights and keys, per device and operand type; a device not listed takes the entry
+# of its architecture's ARCH_DEVICE.
 PRUNE_COSTS = {
+    ("B200", "fp8"): (0.0823, 0.6094, 1.7193),
+    ("B200", "bf16"): (0.2130, 0.6015, 1.7920),
     ("H800", "fp8"): (0.0262, 0.5296, 1.4184),
     ("H800", "bf16"): (0.0095, 0.5334, 1.3627),
     ("H20", "fp8"): (0.0272, 0.5098, 1.0018),
@@ -392,8 +401,7 @@ PRUNE_COSTS = {
     ("H200", "fp8"): (0.1260, 0.5078, 1.3854),
     ("H200", "bf16"): (0.1000, 0.5062, 1.3826),
 }
-# Other names of these devices (a word of torch.cuda.get_device_name).
-DEVICE_ALIASES = {}
+ARCH_DEVICE = {10: "B200", 9: "H800"}
 
 
 def adaptive_eligible(q: torch.Tensor, seq_len_kv: int) -> bool:
@@ -408,12 +416,12 @@ def prune_costs(device_index: int, bf16: bool) -> Tuple[float, float, float]:
     if env:
         p, c, b = (float(x) for x in env.split(","))
         return p, c, b
-    words = {DEVICE_ALIASES.get(w, w) for w in torch.cuda.get_device_name(device_index).split()}
+    words = set(torch.cuda.get_device_name(device_index).split())
     kind = "bf16" if bf16 else "fp8"
     for (device, dtype), costs in PRUNE_COSTS.items():
         if device in words and dtype == kind:
             return costs
-    return PRUNE_COSTS[("H800", kind)]
+    return PRUNE_COSTS[(ARCH_DEVICE.get(torch.cuda.get_device_capability(device_index)[0], "H800"), kind)]
 
 
 @functools.lru_cache(maxsize=4096)
