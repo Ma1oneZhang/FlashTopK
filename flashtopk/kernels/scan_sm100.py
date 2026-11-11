@@ -989,14 +989,17 @@ class ScanSm100:
                             pos = pos + Int32(cute.arch.popc(mask_0))
                             slot_1 = pos + Int32(cute.arch.popc(mask_1 & lane_mask))
                             pos = pos + Int32(cute.arch.popc(mask_1))
-                            ok_0 = sel_0 & (slot_0 < cand_cap)
-                            ok_1 = sel_1 & (slot_1 < cand_cap)
-                            off_0 = cutlass.Int64(slot_0) * cutlass.Int64(4)
-                            off_1 = cutlass.Int64(slot_1) * cutlass.Int64(4)
-                            store_global_b32_if(ok_0, val_rows[g] + off_0, fp32_to_i32_bits(-scores_0[v]))
-                            store_global_b32_if(ok_0, idx_rows[g] + off_0, key_base_0 + v)
-                            store_global_b32_if(ok_1, val_rows[g] + off_1, fp32_to_i32_bits(-scores_1[v]))
-                            store_global_b32_if(ok_1, idx_rows[g] + off_1, key_base_1 + v)
+                            # Most slices of a hit pair hold no hit: skip their four (all predicated-off) stores.
+                            # The masks are ballots, so the branch is warp-uniform.
+                            if (mask_0 | mask_1) != cutlass.Uint32(0):
+                                ok_0 = sel_0 & (slot_0 < cand_cap)
+                                ok_1 = sel_1 & (slot_1 < cand_cap)
+                                off_0 = cutlass.Int64(slot_0) * cutlass.Int64(4)
+                                off_1 = cutlass.Int64(slot_1) * cutlass.Int64(4)
+                                store_global_b32_if(ok_0, val_rows[g] + off_0, fp32_to_i32_bits(-scores_0[v]))
+                                store_global_b32_if(ok_0, idx_rows[g] + off_0, key_base_0 + v)
+                                store_global_b32_if(ok_1, val_rows[g] + off_1, fp32_to_i32_bits(-scores_1[v]))
+                                store_global_b32_if(ok_1, idx_rows[g] + off_1, key_base_1 + v)
 
         if cutlass.const_expr(self.single_split):
             for g in cutlass.range_constexpr(num_q_groups):
